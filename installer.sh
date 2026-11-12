@@ -1,64 +1,96 @@
 #!/bin/bash
 
-# Docker Installation Script für Debian 13 (Trixie)
+# Docker installation script for Debian 13 (Trixie)
 # by TZRU
 
-set -e
+set -euo pipefail
 
-echo "=== Docker Installation für Debian 13 wird gestartet ==="
+echo "=== Starting Docker installation for Debian 13 ==="
 
-# Alte/konfliktrechtliche Pakete deinstallieren
-echo "Schritt 1: Entferne alte Docker-Pakete..."
-sudo apt remove docker.io docker-compose docker-doc podman-docker containerd runc 2>/dev/null || true
+# Allow running as root without sudo (minimal Debian installs often lack sudo)
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo "Error: sudo is not installed. Please run this script as root." >&2
+        exit 1
+    fi
+    SUDO="sudo"
+fi
 
-# System aktualisieren
-echo "Schritt 2: Aktualisiere System-Pakete..."
-sudo apt update
-sudo apt install -y ca-certificates curl
+# Only run on Debian, because Docker's Debian repository is added
+. /etc/os-release
+if [ "${ID:-}" != "debian" ]; then
+    echo "Error: This script is intended for Debian only (detected: ${ID:-unknown})." >&2
+    exit 1
+fi
+if [ "${VERSION_CODENAME:-}" != "trixie" ]; then
+    echo "Note: Tested on Debian 13 (trixie), detected: ${VERSION_CODENAME:-unknown}."
+fi
 
-# Docker GPG-Schlüssel hinzufügen
-echo "Schritt 3: Füge Docker GPG-Schlüssel hinzu..."
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
+# User to add to the docker group (when run via sudo, the invoking user)
+TARGET_USER="${SUDO_USER:-${USER:-}}"
 
-# Docker Repository hinzufügen
-echo "Schritt 4: Füge Docker Repository hinzu..."
-sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+# Remove old or conflicting packages
+echo "Step 1: Removing old Docker packages..."
+for pkg in docker.io docker-compose docker-doc podman-docker containerd runc; do
+    $SUDO apt-get remove -y "$pkg" >/dev/null 2>&1 || true
+done
+
+# Update system packages
+echo "Step 2: Updating system packages..."
+$SUDO apt-get update
+$SUDO apt-get install -y ca-certificates curl
+
+# Add Docker's GPG key
+echo "Step 3: Adding Docker GPG key..."
+$SUDO install -m 0755 -d /etc/apt/keyrings
+$SUDO curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+$SUDO chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add Docker repository
+echo "Step 4: Adding Docker repository..."
+$SUDO tee /etc/apt/sources.list.d/docker.sources > /dev/null <<SOURCES
 Types: deb
 URIs: https://download.docker.com/linux/debian
-Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Suites: ${VERSION_CODENAME}
 Components: stable
+Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
-EOF
+SOURCES
 
-# Paketliste aktualisieren
-echo "Schritt 5: Aktualisiere Paketliste..."
-sudo apt update
+# Refresh package list
+echo "Step 5: Refreshing package list..."
+$SUDO apt-get update
 
-# Docker Engine und Compose installieren
-echo "Schritt 6: Installiere Docker Engine, CLI, Containerd, Buildx und Compose Plugin..."
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+# Install Docker Engine and Compose
+echo "Step 6: Installing Docker Engine, CLI, containerd, Buildx and Compose plugin..."
+$SUDO apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-# Docker-Dienst starten
-echo "Schritt 7: Starte Docker-Dienst..."
-sudo systemctl start docker
-sudo systemctl enable docker
+# Start Docker service
+echo "Step 7: Starting Docker service..."
+$SUDO systemctl enable --now docker
 
-# Aktuellen Benutzer zur docker-Gruppe hinzufügen
-echo "Schritt 8: Füge aktuellen Benutzer zur docker-Gruppe hinzu..."
-sudo usermod -aG docker $USER
+# Add user to the docker group
+if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+    echo "Step 8: Adding user '$TARGET_USER' to the docker group..."
+    $SUDO usermod -aG docker "$TARGET_USER"
+else
+    echo "Step 8: Skipped (running as root, no other user detected)."
+fi
 
-# Installation testen
-echo "Schritt 9: Teste Docker-Installation..."
-sudo docker run hello-world
+# Test the installation
+echo "Step 9: Testing Docker installation..."
+$SUDO docker run --rm hello-world
 
 echo ""
-echo "=== Docker Installation erfolgreich abgeschlossen ==="
+echo "=== Docker installation completed successfully ==="
 echo ""
-echo "Installierte Versionen:"
-docker --version
-docker compose version
+echo "Installed versions:"
+$SUDO docker --version
+$SUDO docker compose version
 echo ""
-echo "WICHTIG: Bitte melde dich ab und wieder an, damit die docker-Gruppe aktiv wird."
-echo "Danach kannst du Docker ohne 'sudo' verwenden."
+if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+    echo "IMPORTANT: Log out and back in so the docker group membership takes effect."
+    echo "After that you can use Docker without 'sudo'."
+fi
